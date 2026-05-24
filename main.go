@@ -62,6 +62,7 @@ func main() {
 
 	// No Redis in MVP — NoopCache makes every Get a miss, every Set a no-op.
 	// When Redis is added later, swap this one line for cache.NewRedisCache(...).
+	//
 	cacheClient := cache.NewNoopCache()
 	defer func() { _ = cacheClient.Close() }()
 

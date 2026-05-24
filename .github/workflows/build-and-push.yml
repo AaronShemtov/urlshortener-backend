@@ -1,0 +1,73 @@
+name: build-and-push
+
+on:
+  push:
+    branches: [main]
+  # Allow manual triggering from the Actions tab for ad-hoc rebuilds.
+  workflow_dispatch:
+
+# Cancel in-progress runs if a new push lands on the same branch — no point
+# building stale code.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+
+    # Permissions are scoped to what this workflow actually needs.
+    # contents: read — to checkout the code.
+    # packages: write — unused here (we push to OCIR, not ghcr) but harmless.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # QEMU lets us cross-compile to arm64 from an amd64 runner.
+      # Required because OCI Ampere A1 nodes are arm64.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Buildx is the modern Docker builder — supports multi-platform,
+      # advanced caching, and the BuildKit features our Dockerfile uses.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to OCIR
+        uses: docker/login-action@v3
+        with:
+          registry: il-jerusalem-1.ocir.io
+          username: axiwhc5fgu9i/shemtov.aaron@gmail.com
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+      # Short SHA is what we use as the immutable tag — matches the convention
+      # we established when building manually (e.g. ":c655642").
+      - name: Resolve image tag
+        id: tag
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            il-jerusalem-1.ocir.io/axiwhc5fgu9i/urlshortener-backend:${{ steps.tag.outputs.sha }}
+            il-jerusalem-1.ocir.io/axiwhc5fgu9i/urlshortener-backend:latest
+          # GitHub-hosted cache speeds up subsequent builds by reusing
+          # layers when go.mod or source files haven't changed.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "### Image pushed :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: \`${{ steps.tag.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Also tagged as: \`latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Update \`personal-k8s\` Deployment image tag to deploy this build." >> $GITHUB_STEP_SUMMARY

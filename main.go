@@ -11,7 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AaronShemtov/urlshortener-backend/internal/cache"
 	"github.com/AaronShemtov/urlshortener-backend/internal/config"
+	"github.com/AaronShemtov/urlshortener-backend/internal/handler"
 	"github.com/AaronShemtov/urlshortener-backend/internal/storage"
 )
 
@@ -31,7 +33,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// CLI flag wins over env var, but must re-validate to catch bad input.
 	if modeFlag != "" {
 		cfg.Mode = modeFlag
 		if err := cfg.Validate(); err != nil {
@@ -59,12 +60,40 @@ func main() {
 		}
 	}()
 
+	// No Redis in MVP — NoopCache makes every Get a miss, every Set a no-op.
+	// When Redis is added later, swap this one line for cache.NewRedisCache(...).
+	cacheClient := cache.NewNoopCache()
+	defer func() { _ = cacheClient.Close() }()
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	mux := http.NewServeMux()
+
+	// Health endpoints — always registered, regardless of mode.
 	mux.HandleFunc("GET /healthz", livenessHandler)
 	mux.HandleFunc("GET /readyz", readinessHandler(store))
+
+	// Business endpoints — registered conditionally based on mode.
+	// In production: writer pods only POST, reader pods only GET.
+	// "all" mode is for local development and integration tests.
+	switch cfg.Mode {
+	case "writer":
+		wh := handler.NewWriterHandler(store, cacheClient, cfg.BaseURL, cfg.ShortCodeLength)
+		mux.HandleFunc("POST /shorten", wh.Shorten)
+		mux.HandleFunc("POST /createcustom", wh.CreateCustom)
+
+	case "reader":
+		rh := handler.NewReaderHandler(store, cacheClient)
+		mux.HandleFunc("GET /{code}", rh.Redirect)
+
+	case "all":
+		wh := handler.NewWriterHandler(store, cacheClient, cfg.BaseURL, cfg.ShortCodeLength)
+		rh := handler.NewReaderHandler(store, cacheClient)
+		mux.HandleFunc("POST /shorten", wh.Shorten)
+		mux.HandleFunc("POST /createcustom", wh.CreateCustom)
+		mux.HandleFunc("GET /{code}", rh.Redirect)
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -100,14 +129,11 @@ func main() {
 	slog.Info("server stopped cleanly")
 }
 
-// livenessHandler — process is alive. No dependency checks here.
 func livenessHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
 
-// readinessHandler verifies storage is reachable before reporting Ready.
-// k8s pulls the pod out of Service rotation if this fails.
 func readinessHandler(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)

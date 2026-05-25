@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -22,28 +23,35 @@ type Config struct {
 	// ShortCodeLength is the length of generated short codes (3..32).
 	ShortCodeLength int
 
-	// NoSQLEndpoint is the OCI NoSQL Database Cloud Service endpoint,
-	// e.g. "https://nosql.il-jerusalem-1.oci.oraclecloud.com".
-	NoSQLEndpoint string
+	// ADBBaseURL is the SODA REST root for the schema, no trailing slash.
+	// Example:
+	//   https://abc-foo.adb.il-jerusalem-1.oraclecloudapps.com/ords/admin/soda/latest
+	ADBBaseURL string
 
-	// NoSQLTable is the name of the NoSQL table holding URL records.
-	NoSQLTable string
+	// ADBCollection is the name of the SODA collection holding URL records.
+	ADBCollection string
 
-	// OCICompartmentOCID is the compartment that owns the NoSQL table.
-	// Instance Principal auth requires this to scope API calls.
-	OCICompartmentOCID string
+	// ADBUsername is the database user. For Always Free ATP we use ADMIN
+	// because REST-enabling a separate schema is blocked on managed
+	// instances. Not ideal for production; acceptable for a personal app.
+	ADBUsername string
+
+	// ADBPassword is the database password. Injected from a k8s Secret
+	// sourced from OCI Vault via ESO.
+	ADBPassword string
 }
 
 // Load reads configuration from env vars and validates it.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Mode:               getEnv("MODE", "all"),
-		Port:               getEnv("PORT", "8080"),
-		BaseURL:            getEnv("BASE_URL", "https://1ms.my"),
-		ShortCodeLength:    getEnvInt("SHORT_CODE_LENGTH", 6),
-		NoSQLEndpoint:      getEnv("NOSQL_ENDPOINT", ""),
-		NoSQLTable:         getEnv("NOSQL_TABLE", "urls"),
-		OCICompartmentOCID: getEnv("OCI_COMPARTMENT_OCID", ""),
+		Mode:            getEnv("MODE", "all"),
+		Port:            getEnv("PORT", "8080"),
+		BaseURL:         getEnv("BASE_URL", "https://1ms.my"),
+		ShortCodeLength: getEnvInt("SHORT_CODE_LENGTH", 6),
+		ADBBaseURL:      getEnv("ADB_BASE_URL", ""),
+		ADBCollection:   getEnv("ADB_COLLECTION", "urls"),
+		ADBUsername:     getEnv("ADB_USERNAME", ""),
+		ADBPassword:     getEnv("ADB_PASSWORD", ""),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -66,13 +74,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("SHORT_CODE_LENGTH must be 3..32, got %d", c.ShortCodeLength)
 	}
 
-	if c.NoSQLEndpoint == "" {
-		return fmt.Errorf("NOSQL_ENDPOINT is required " +
-			"(e.g. https://nosql.il-jerusalem-1.oci.oraclecloud.com)")
+	if c.ADBBaseURL == "" {
+		return errors.New("ADB_BASE_URL is required " +
+			"(e.g. https://...oraclecloudapps.com/ords/admin/soda/latest)")
 	}
 
-	if c.OCICompartmentOCID == "" {
-		return fmt.Errorf("OCI_COMPARTMENT_OCID is required for Instance Principal auth")
+	if c.ADBUsername == "" {
+		return errors.New("ADB_USERNAME is required")
+	}
+
+	if c.ADBPassword == "" {
+		return errors.New("ADB_PASSWORD is required")
 	}
 
 	return nil

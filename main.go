@@ -41,19 +41,24 @@ func main() {
 		}
 	}
 
+	// Never log secrets — ADBPassword stays out of slog attrs.
 	slog.Info("starting urlshortener-backend",
 		"mode", cfg.Mode,
 		"port", cfg.Port,
 		"base_url", cfg.BaseURL,
-		"nosql_endpoint", cfg.NoSQLEndpoint,
-		"nosql_table", cfg.NoSQLTable,
+		"adb_base_url", cfg.ADBBaseURL,
+		"adb_collection", cfg.ADBCollection,
+		"adb_username", cfg.ADBUsername,
 	)
 
-	store, err := storage.NewNoSQLStorage(cfg.NoSQLEndpoint, cfg.NoSQLTable, cfg.OCICompartmentOCID)
-	if err != nil {
-		slog.Error("storage init failed", "error", err)
-		os.Exit(1)
-	}
+	// SodaStore has no network I/O in its constructor — failures show up
+	// at first request (and via /readyz before the pod gets traffic).
+	store := storage.NewSodaStore(storage.SodaConfig{
+		BaseURL:    cfg.ADBBaseURL,
+		Collection: cfg.ADBCollection,
+		Username:   cfg.ADBUsername,
+		Password:   cfg.ADBPassword,
+	})
 	defer func() {
 		if err := store.Close(); err != nil {
 			slog.Error("storage close failed", "error", err)
@@ -62,7 +67,6 @@ func main() {
 
 	// No Redis in MVP — NoopCache makes every Get a miss, every Set a no-op.
 	// When Redis is added later, swap this one line for cache.NewRedisCache(...).
-	//
 	cacheClient := cache.NewNoopCache()
 	defer func() { _ = cacheClient.Close() }()
 

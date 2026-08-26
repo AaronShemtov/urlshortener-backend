@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/AaronShemtov/urlshortener-backend/internal/cache"
@@ -16,6 +18,8 @@ import (
 // 24h is a reasonable trade-off: hot links stay cached, but stale entries
 // (deleted long URLs etc) get refreshed daily.
 const cacheTTL = 24 * time.Hour
+
+var customCodeRe = regexp.MustCompile(`^[a-z0-9-]{4,32}$`)
 
 // WriterHandler serves the write endpoints. Only registered when MODE=writer or all.
 type WriterHandler struct {
@@ -107,8 +111,9 @@ func (h *WriterHandler) CreateCustom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing url or code")
 		return
 	}
-	if len(req.Code) < 4 {
-		writeError(w, http.StatusBadRequest, "custom code must be at least 4 characters")
+	req.Code = strings.ToLower(req.Code)
+	if !customCodeRe.MatchString(req.Code) {
+		writeError(w, http.StatusBadRequest, "custom code must be 4-32 chars: lowercase letters, digits, hyphen")
 		return
 	}
 

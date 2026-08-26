@@ -76,8 +76,8 @@ func main() {
 	mux := http.NewServeMux()
 
 	// Health endpoints — always registered, regardless of mode.
-	mux.HandleFunc("GET /healthz", livenessHandler)
-	mux.HandleFunc("GET /readyz", readinessHandler(store))
+	mux.HandleFunc("/healthz", handler.MethodHandler("GET", livenessHandler))
+	mux.HandleFunc("/readyz", handler.MethodHandler("GET", readinessHandler(store)))
 
 	// Business endpoints — registered conditionally based on mode.
 	// In production: writer pods only POST, reader pods only GET.
@@ -85,19 +85,20 @@ func main() {
 	switch cfg.Mode {
 	case "writer":
 		wh := handler.NewWriterHandler(store, cacheClient, cfg.BaseURL, cfg.ShortCodeLength)
-		mux.HandleFunc("POST /shorten", wh.Shorten)
-		mux.HandleFunc("POST /createcustom", wh.CreateCustom)
+		mux.HandleFunc("/shorten", handler.MethodHandler("POST", wh.Shorten))
+		mux.HandleFunc("/createcustom", handler.MethodHandler("POST", wh.CreateCustom))
 
 	case "reader":
 		rh := handler.NewReaderHandler(store, cacheClient)
-		mux.HandleFunc("GET /{code}", rh.Redirect)
+		// register root so reader can extract code from the path
+		mux.HandleFunc("/", handler.MethodHandler("GET", rh.Redirect))
 
 	case "all":
 		wh := handler.NewWriterHandler(store, cacheClient, cfg.BaseURL, cfg.ShortCodeLength)
 		rh := handler.NewReaderHandler(store, cacheClient)
-		mux.HandleFunc("POST /shorten", wh.Shorten)
-		mux.HandleFunc("POST /createcustom", wh.CreateCustom)
-		mux.HandleFunc("GET /{code}", rh.Redirect)
+		mux.HandleFunc("/shorten", handler.MethodHandler("POST", wh.Shorten))
+		mux.HandleFunc("/createcustom", handler.MethodHandler("POST", wh.CreateCustom))
+		mux.HandleFunc("/", handler.MethodHandler("GET", rh.Redirect))
 	}
 
 	srv := &http.Server{

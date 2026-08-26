@@ -1,0 +1,14 @@
+{
+  "folders": [
+	{
+		"path": "../.."
+	},
+	{
+		"path": "../../../urlshortener-frontend"
+	},
+	{
+		"path": "../../../gemini-sre-agent"
+	}
+],
+  "settings": {}
+}

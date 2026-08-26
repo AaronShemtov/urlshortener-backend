@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/AaronShemtov/urlshortener-backend/internal/cache"
@@ -34,7 +35,8 @@ func NewReaderHandler(s storage.Storage, c cache.Cache) *ReaderHandler {
 // Cache outage is non-fatal: handler keeps working through storage, just slower.
 // Storage outage IS fatal for this request — we return 500.
 func (h *ReaderHandler) Redirect(w http.ResponseWriter, r *http.Request) {
-	code := r.PathValue("code")
+	// Extract the short code from the URL path. Example: /abc123 -> abc123
+	code := strings.TrimPrefix(r.URL.Path, "/")
 	if code == "" {
 		http.NotFound(w, r)
 		return

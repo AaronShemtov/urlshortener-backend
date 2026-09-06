@@ -39,6 +39,17 @@ type Config struct {
 	// ADBPassword is the database password. Injected from a k8s Secret
 	// sourced from OCI Vault via ESO.
 	ADBPassword string
+
+	// TurnstileSecret is the Cloudflare Turnstile secret key. It verifies the
+	// one-time tokens the widget on the page hands to a browser, and is what
+	// authorises writes from the web form. Never sent to a client — the site
+	// key in the page is the public half of the pair.
+	TurnstileSecret string
+
+	// APIKey authorises scripted callers, which cannot solve a challenge. The
+	// homepage documents `curl -X POST 1ms.my/shorten`, so this is a feature
+	// rather than a back door — but unlike the site key it is a secret.
+	APIKey string
 }
 
 // Load reads configuration from env vars and validates it.
@@ -52,6 +63,8 @@ func Load() (*Config, error) {
 		ADBCollection:   getEnv("ADB_COLLECTION", "urls"),
 		ADBUsername:     getEnv("ADB_USERNAME", ""),
 		ADBPassword:     getEnv("ADB_PASSWORD", ""),
+		TurnstileSecret: getEnv("TURNSTILE_SECRET", ""),
+		APIKey:          getEnv("SHORTEN_API_KEY", ""),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -85,6 +98,19 @@ func (c *Config) Validate() error {
 
 	if c.ADBPassword == "" {
 		return errors.New("ADB_PASSWORD is required")
+	}
+
+	// Refusing to start beats starting insecure. An unauthenticated /shorten
+	// is not a degraded mode — between 2026-08-20 and 2026-08-22 it was used
+	// to plant 6002 links to phishing pages, which this domain then served for
+	// sixteen days. If neither proof is configured there is nothing to check,
+	// so the process should die loudly at boot rather than pass traffic.
+	if c.Mode == "writer" || c.Mode == "all" {
+		if c.TurnstileSecret == "" && c.APIKey == "" {
+			return errors.New("write mode requires TURNSTILE_SECRET (for the web form) " +
+				"and/or SHORTEN_API_KEY (for scripted callers); refusing to serve an " +
+				"unauthenticated /shorten")
+		}
 	}
 
 	return nil

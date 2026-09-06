@@ -15,6 +15,7 @@ import (
 	"github.com/AaronShemtov/urlshortener-backend/internal/config"
 	"github.com/AaronShemtov/urlshortener-backend/internal/handler"
 	"github.com/AaronShemtov/urlshortener-backend/internal/storage"
+	"github.com/AaronShemtov/urlshortener-backend/internal/turnstile"
 )
 
 func main() {
@@ -70,6 +71,20 @@ func main() {
 	cacheClient := cache.NewNoopCache()
 	defer func() { _ = cacheClient.Close() }()
 
+	// Write authorisation. Config.Validate has already refused to let us reach
+	// here in a write mode with neither proof configured, so the gate always
+	// has something to check.
+	var verifier *turnstile.Verifier
+	if cfg.TurnstileSecret != "" {
+		verifier = turnstile.New(cfg.TurnstileSecret)
+	}
+	writeGate := handler.NewWriteGate(verifier, cfg.APIKey)
+	// Log which paths exist, never the secrets themselves.
+	slog.Info("write authorisation",
+		"turnstile", cfg.TurnstileSecret != "",
+		"api_key", cfg.APIKey != "",
+	)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -84,7 +99,7 @@ func main() {
 	// "all" mode is for local development and integration tests.
 	switch cfg.Mode {
 	case "writer":
-		wh := handler.NewWriterHandler(store, cacheClient, cfg.BaseURL, cfg.ShortCodeLength)
+		wh := handler.NewWriterHandler(store, cacheClient, cfg.BaseURL, cfg.ShortCodeLength, writeGate)
 		mux.HandleFunc("/shorten", handler.MethodHandler("POST", wh.Shorten))
 		mux.HandleFunc("/createcustom", handler.MethodHandler("POST", wh.CreateCustom))
 
@@ -94,7 +109,7 @@ func main() {
 		mux.HandleFunc("/", handler.MethodHandler("GET", rh.Redirect))
 
 	case "all":
-		wh := handler.NewWriterHandler(store, cacheClient, cfg.BaseURL, cfg.ShortCodeLength)
+		wh := handler.NewWriterHandler(store, cacheClient, cfg.BaseURL, cfg.ShortCodeLength, writeGate)
 		rh := handler.NewReaderHandler(store, cacheClient)
 		mux.HandleFunc("/shorten", handler.MethodHandler("POST", wh.Shorten))
 		mux.HandleFunc("/createcustom", handler.MethodHandler("POST", wh.CreateCustom))

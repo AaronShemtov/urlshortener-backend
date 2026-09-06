@@ -45,7 +45,7 @@ func (s *memStoreAll) Close() error                    { return nil }
 func TestEndToEndShortenRedirect(t *testing.T) {
     s := newMemStoreAll()
     cacheClient := cache.NewNoopCache()
-    wh := NewWriterHandler(s, cacheClient, "http://base", 6)
+    wh := NewWriterHandler(s, cacheClient, "http://base", 6, NewOpenWriteGate())
     rh := NewReaderHandler(s, cacheClient)
 
     mux := http.NewServeMux()

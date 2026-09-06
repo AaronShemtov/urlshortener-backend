@@ -27,20 +27,52 @@ type WriterHandler struct {
 	cache      cache.Cache
 	baseURL    string
 	codeLength int
+	gate       *WriteGate
 }
 
-func NewWriterHandler(s storage.Storage, c cache.Cache, baseURL string, codeLength int) *WriterHandler {
+// NewWriterHandler requires a gate rather than defaulting to one, so that
+// "nobody wired up authorisation" is a compile error instead of an open
+// endpoint. See WriteGate for why that distinction earned its own type.
+func NewWriterHandler(
+	s storage.Storage, c cache.Cache, baseURL string, codeLength int, gate *WriteGate,
+) *WriterHandler {
 	return &WriterHandler{
 		storage:    s,
 		cache:      c,
 		baseURL:    baseURL,
 		codeLength: codeLength,
+		gate:       gate,
 	}
 }
 
 type shortenRequest struct {
 	URL  string `json:"url"`
 	Code string `json:"code,omitempty"` // optional, used by CreateCustom
+	// TurnstileToken is the one-time token the widget puts in the page. The
+	// header CF-Turnstile-Response is accepted as an alternative.
+	TurnstileToken string `json:"turnstile_token,omitempty"`
+}
+
+// authorize runs the gate and writes the response itself when the request is
+// refused, returning false. Both write endpoints need identical treatment, and
+// the distinction between the two failure codes is easy to get wrong twice.
+func (h *WriterHandler) authorize(w http.ResponseWriter, r *http.Request, token string) bool {
+	err := h.gate.Authorize(r.Context(), r, token)
+	if err == nil {
+		return true
+	}
+	if refused(err) {
+		// Deliberately terse: telling a script which proof was missing helps
+		// it iterate. The page knows what to send.
+		slog.InfoContext(r.Context(), "write refused", "reason", err.Error(), "ip", ClientIP(r))
+		writeError(w, http.StatusForbidden, "verification required")
+		return false
+	}
+	// Cloudflare unreachable or misbehaving. This is ours, not the caller's,
+	// and 503 is what tells a client that retrying later is worthwhile.
+	slog.ErrorContext(r.Context(), "turnstile verification unavailable", "error", err)
+	writeError(w, http.StatusServiceUnavailable, "verification temporarily unavailable")
+	return false
 }
 
 type shortenResponse struct {
@@ -53,6 +85,9 @@ func (h *WriterHandler) Shorten(w http.ResponseWriter, r *http.Request) {
 	var req shortenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if !h.authorize(w, r, req.TurnstileToken) {
 		return
 	}
 	if req.URL == "" {
@@ -105,6 +140,9 @@ func (h *WriterHandler) CreateCustom(w http.ResponseWriter, r *http.Request) {
 	var req shortenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if !h.authorize(w, r, req.TurnstileToken) {
 		return
 	}
 	if req.URL == "" || req.Code == "" {

@@ -43,7 +43,7 @@ func (s *memStoreW) Close() error                 { return nil }
 
 func TestShortenAndCreateCustom(t *testing.T) {
 	s := newMemStoreW()
-	wh := NewWriterHandler(s, cache.NewNoopCache(), "http://base", 6)
+	wh := NewWriterHandler(s, cache.NewNoopCache(), "http://base", 6, NewOpenWriteGate())
 
 	// Test Shorten happy path
 	reqBody := map[string]string{"url": "https://example.com"}
@@ -97,7 +97,7 @@ func TestCreateCustomValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newMemStoreW()
-			wh := NewWriterHandler(s, cache.NewNoopCache(), "http://base", 6)
+			wh := NewWriterHandler(s, cache.NewNoopCache(), "http://base", 6, NewOpenWriteGate())
 			body, err := json.Marshal(map[string]string{
 				"url":  "https://example.com",
 				"code": tt.code,

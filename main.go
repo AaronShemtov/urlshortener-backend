@@ -155,9 +155,21 @@ func livenessHandler(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// readinessTimeout is how long the storage ping may take before this pod calls
+// itself unready.
+//
+// It must stay below the probe's own timeoutSeconds in the Deployment (5s), or
+// the kubelet closes the connection first and the handler reports "context
+// canceled" — an error about our own probe giving up, dressed as a storage
+// fault. That is precisely what filled the logs while the probe used the
+// default 1s timeout against a 2s deadline here.
+//
+// It is not a local check: /readyz reaches Oracle across the internet.
+const readinessTimeout = 3 * time.Second
+
 func readinessHandler(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 		defer cancel()
 		if err := store.Ping(ctx); err != nil {
 			slog.Warn("readiness probe: storage unhealthy", "error", err)

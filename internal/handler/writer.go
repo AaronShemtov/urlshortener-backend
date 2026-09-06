@@ -64,7 +64,10 @@ func (h *WriterHandler) authorize(w http.ResponseWriter, r *http.Request, token 
 	if refused(err) {
 		// Deliberately terse: telling a script which proof was missing helps
 		// it iterate. The page knows what to send.
-		slog.InfoContext(r.Context(), "write refused", "reason", err.Error(), "ip", ClientIP(r))
+		// A fingerprint, not an address: these lines land in a Loki that is
+		// readable through a deliberately public Grafana. See clientFingerprint.
+		slog.InfoContext(r.Context(), "write refused",
+			"reason", err.Error(), "client", clientFingerprint(r))
 		writeError(w, http.StatusForbidden, "verification required")
 		return false
 	}

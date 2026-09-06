@@ -2,7 +2,10 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
@@ -119,4 +122,37 @@ func ClientIP(r *http.Request) string {
 // verification service we could not reach (503).
 func refused(err error) bool {
 	return errors.Is(err, ErrUnauthorized) || errors.Is(err, turnstile.ErrRejected)
+}
+
+// fingerprintSalt is fresh per process and never leaves it, so a fingerprint
+// cannot be turned back into an address by anyone reading the logs — including
+// by us, later, with a list of candidate addresses.
+var fingerprintSalt = func() []byte {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// A predictable salt is worse than none, because it looks anonymous
+		// while being reversible by brute force over the IPv4 space.
+		panic("cannot seed the client fingerprint salt: " + err.Error())
+	}
+	return b
+}()
+
+// clientFingerprint identifies a caller across requests without recording who
+// they are.
+//
+// Logging the address itself is not an option here: these lines go to Loki,
+// and Loki answers unauthenticated queries through a Grafana that is public on
+// purpose. A refusal log full of visitor IP addresses would publish them.
+//
+// What the log actually needs to answer is "one source or many?", and a hash
+// answers that exactly as well. It is deliberately per-process and unsalted by
+// anything durable, so it is comparable within one pod's lifetime and
+// meaningless outside it — enough to recognise a loop, useless as a record.
+func clientFingerprint(r *http.Request) string {
+	ip := ClientIP(r)
+	if ip == "" {
+		return "unknown"
+	}
+	sum := sha256.Sum256(append(append([]byte{}, fingerprintSalt...), ip...))
+	return hex.EncodeToString(sum[:4])
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/AaronShemtov/urlshortener-backend/internal/cache"
@@ -234,5 +235,34 @@ func TestTheOpenGateReallyIsOpen(t *testing.T) {
 	// "fixes" it into something that quietly half-checks.
 	if err := NewOpenWriteGate().Authorize(context.Background(), post(`{}`, nil), ""); err != nil {
 		t.Fatalf("open gate refused a request: %v", err)
+	}
+}
+
+// -- what the logs are allowed to say --------------------------------------
+
+func TestTheFingerprintDoesNotContainTheAddress(t *testing.T) {
+	// These lines go to Loki, which answers unauthenticated queries through a
+	// Grafana that is public on purpose. An address in a log line is published.
+	r := post(`{}`, map[string]string{"CF-Connecting-IP": "198.51.100.5"})
+	fp := clientFingerprint(r)
+	if strings.Contains(fp, "198.51.100.5") || strings.Contains(fp, "198") {
+		t.Fatalf("fingerprint leaks the address: %q", fp)
+	}
+	if fp == "" || fp == "unknown" {
+		t.Fatalf("fingerprint is useless: %q", fp)
+	}
+}
+
+func TestTheSameCallerFingerprintsTheSameWay(t *testing.T) {
+	// Otherwise "one source or many?" — the only question the log needs to
+	// answer — becomes unanswerable.
+	a := clientFingerprint(post(`{}`, map[string]string{"CF-Connecting-IP": "198.51.100.5"}))
+	b := clientFingerprint(post(`{}`, map[string]string{"CF-Connecting-IP": "198.51.100.5"}))
+	c := clientFingerprint(post(`{}`, map[string]string{"CF-Connecting-IP": "203.0.113.9"}))
+	if a != b {
+		t.Errorf("the same address fingerprinted two ways: %q vs %q", a, b)
+	}
+	if a == c {
+		t.Errorf("two addresses collapsed to one fingerprint: %q", a)
 	}
 }

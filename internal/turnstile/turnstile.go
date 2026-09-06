@@ -131,16 +131,32 @@ func (v *Verifier) Verify(ctx context.Context, token, remoteIP string) error {
 		if codes == "" {
 			codes = "no reason given"
 		}
-		// internal-error means Cloudflare failed, not the caller. Keeping it
-		// distinct matters: the caller retrying is useless, and a spike of
-		// these is our problem to notice, not evidence of an attack.
+		// Not every refusal is the caller's fault, and conflating the two is
+		// actively misleading: a wrong secret key would tell every visitor
+		// their browser failed a check, while the real fault — a placeholder
+		// left in Vault, a key from the wrong widget — hides inside what looks
+		// like ordinary abuse. Those cases must surface as ours.
 		for _, c := range body.ErrorCodes {
-			if c == "internal-error" {
-				return fmt.Errorf("turnstile: cloudflare internal error (%s)", codes)
+			if ourFault[c] {
+				return fmt.Errorf("turnstile: verification misconfigured or unavailable (%s)", codes)
 			}
 		}
 		return fmt.Errorf("%w (%s)", ErrRejected, codes)
 	}
 
 	return nil
+}
+
+// ourFault lists the siteverify error codes that describe this server rather
+// than the caller. Everything else — a missing, malformed, expired or replayed
+// token — is the caller's, and belongs in a 403.
+var ourFault = map[string]bool{
+	// Cloudflare broke. Retrying does not help the caller.
+	"internal-error": true,
+	// The secret key is absent or wrong: a deploy problem, not an attack.
+	"missing-input-secret": true,
+	"invalid-input-secret": true,
+	// The secret does not belong to the widget that issued the token, which
+	// happens when the site key and secret key come from different widgets.
+	"invalid-input-sitekey": true,
 }

@@ -110,18 +110,46 @@ func TestASpentOrForgedTokenIsRejected(t *testing.T) {
 
 // -- not the caller's fault: must not read as a rejection -------------------
 
-func TestCloudflaresOwnFailureIsNotBlamedOnTheCaller(t *testing.T) {
-	// internal-error means Cloudflare broke. Reporting it as ErrRejected would
-	// tell the user their browser failed a check it never ran, and would hide a
-	// real outage inside what looks like ordinary abuse.
-	srv := fakeCloudflare(t, 200, `{"success":false,"error-codes":["internal-error"]}`, nil)
+func TestOurOwnMisconfigurationIsNotBlamedOnTheCaller(t *testing.T) {
+	// Reporting these as ErrRejected would tell every visitor their browser
+	// failed a check it never ran, and would bury a broken deploy inside what
+	// looks like ordinary abuse. invalid-input-secret in particular is exactly
+	// what a placeholder left in Vault produces.
+	for _, code := range []string{
+		"internal-error",
+		"missing-input-secret",
+		"invalid-input-secret",
+		"invalid-input-sitekey",
+	} {
+		srv := fakeCloudflare(t, 200,
+			`{"success":false,"error-codes":["`+code+`"]}`, nil)
 
-	err := New("s").WithEndpoint(srv.URL).Verify(context.Background(), "tok", "")
-	if err == nil {
-		t.Fatal("want an error")
+		err := New("s").WithEndpoint(srv.URL).Verify(context.Background(), "tok", "")
+		if err == nil {
+			t.Fatalf("%s: want an error", code)
+		}
+		if errors.Is(err, ErrRejected) {
+			t.Errorf("%s was reported as a bad token: %v", code, err)
+		}
 	}
-	if errors.Is(err, ErrRejected) {
-		t.Errorf("Cloudflare's internal error was reported as a bad token: %v", err)
+}
+
+func TestTheCallersOwnMistakesStayTheCallers(t *testing.T) {
+	// The other side of the same line: these must remain 403, or a real
+	// abuse loop would read as a server fault and get retried politely.
+	for _, code := range []string{
+		"missing-input-response",
+		"invalid-input-response",
+		"timeout-or-duplicate",
+		"bad-request",
+	} {
+		srv := fakeCloudflare(t, 200,
+			`{"success":false,"error-codes":["`+code+`"]}`, nil)
+
+		err := New("s").WithEndpoint(srv.URL).Verify(context.Background(), "tok", "")
+		if !errors.Is(err, ErrRejected) {
+			t.Errorf("%s: want ErrRejected, got %v", code, err)
+		}
 	}
 }
 

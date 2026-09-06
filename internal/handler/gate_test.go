@@ -266,3 +266,35 @@ func TestTheSameCallerFingerprintsTheSameWay(t *testing.T) {
 		t.Errorf("two addresses collapsed to one fingerprint: %q", a)
 	}
 }
+
+// -- what a successful write records ---------------------------------------
+
+func TestASuccessfulWriteReportsWhichProofWasUsed(t *testing.T) {
+	// The log line that answers "why was that slow?". It was missing the first
+	// time the question came up, and the answer had to be reconstructed from a
+	// browser's network tab.
+	store := newMemStoreW()
+	wh := NewWriterHandler(store, cache.NewNoopCache(), "http://base", 6,
+		gateWithTurnstile(t, false, "right-key"))
+
+	w := httptest.NewRecorder()
+	wh.Shorten(w, post(`{"url":"https://example.com"}`,
+		map[string]string{APIKeyHeader: "right-key"}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	proof, _, ok := wh.authorize(httptest.NewRecorder(),
+		post(`{}`, map[string]string{APIKeyHeader: "right-key"}), "")
+	if !ok || proof != "api-key" {
+		t.Errorf("proof = %q ok = %v, want api-key/true", proof, ok)
+	}
+
+	proof, _, ok = wh.authorize(httptest.NewRecorder(), post(`{}`, nil), "")
+	if ok {
+		t.Fatal("a proofless request was authorised")
+	}
+	if proof != "turnstile" {
+		t.Errorf("proof = %q, want turnstile", proof)
+	}
+}

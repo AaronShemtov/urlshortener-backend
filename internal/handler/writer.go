@@ -54,12 +54,30 @@ type shortenRequest struct {
 }
 
 // authorize runs the gate and writes the response itself when the request is
-// refused, returning false. Both write endpoints need identical treatment, and
-// the distinction between the two failure codes is easy to get wrong twice.
-func (h *WriterHandler) authorize(w http.ResponseWriter, r *http.Request, token string) bool {
+// refused, returning ok=false. Both write endpoints need identical treatment,
+// and the distinction between the two failure codes is easy to get wrong twice.
+//
+// It also reports which proof was accepted and how long checking it took. That
+// exists because the first question asked of this feature in production was
+// "why was that slow?", and the logs could not answer: nothing was recorded
+// about a successful write at all. The answer turned out to be entirely on the
+// browser side, but only a stopwatch could show that.
+func (h *WriterHandler) authorize(
+	w http.ResponseWriter, r *http.Request, token string,
+) (proof string, verify time.Duration, ok bool) {
+	started := time.Now()
 	err := h.gate.Authorize(r.Context(), r, token)
+	verify = time.Since(started)
+
+	proof = "turnstile"
+	if r.Header.Get(APIKeyHeader) != "" {
+		// A key that is present but wrong never reaches Turnstile — the gate
+		// returns on the spot — so if the check passed, the key is what passed it.
+		proof = "api-key"
+	}
+
 	if err == nil {
-		return true
+		return proof, verify, true
 	}
 	if refused(err) {
 		// Deliberately terse: telling a script which proof was missing helps
@@ -69,13 +87,13 @@ func (h *WriterHandler) authorize(w http.ResponseWriter, r *http.Request, token 
 		slog.InfoContext(r.Context(), "write refused",
 			"reason", err.Error(), "client", clientFingerprint(r))
 		writeError(w, http.StatusForbidden, "verification required")
-		return false
+		return proof, verify, false
 	}
 	// Cloudflare unreachable or misbehaving. This is ours, not the caller's,
 	// and 503 is what tells a client that retrying later is worthwhile.
 	slog.ErrorContext(r.Context(), "turnstile verification unavailable", "error", err)
 	writeError(w, http.StatusServiceUnavailable, "verification temporarily unavailable")
-	return false
+	return proof, verify, false
 }
 
 type shortenResponse struct {
@@ -85,12 +103,14 @@ type shortenResponse struct {
 // Shorten allocates a random code and saves the mapping.
 // Retries up to maxAttempts times on collision (extremely rare for 6+ char codes).
 func (h *WriterHandler) Shorten(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	var req shortenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if !h.authorize(w, r, req.TurnstileToken) {
+	proof, verify, ok := h.authorize(w, r, req.TurnstileToken)
+	if !ok {
 		return
 	}
 	if req.URL == "" {
@@ -124,6 +144,13 @@ func (h *WriterHandler) Shorten(w http.ResponseWriter, r *http.Request) {
 			if err := h.cache.Set(r.Context(), cacheKey(code), req.URL, cacheTTL); err != nil {
 				slog.WarnContext(r.Context(), "cache pre-warm failed", "error", err)
 			}
+			// The URL itself is not logged. It is the one field a visitor
+			// supplies, these lines are world-readable through Grafana, and
+			// knowing how long the write took needs none of it.
+			slog.InfoContext(r.Context(), "link created",
+				"code", code, "via", proof,
+				"verify_ms", verify.Milliseconds(),
+				"total_ms", time.Since(started).Milliseconds())
 			writeJSON(w, http.StatusOK, shortenResponse{
 				ShortURL: fmt.Sprintf("%s/%s", h.baseURL, code),
 			})
@@ -140,12 +167,14 @@ func (h *WriterHandler) Shorten(w http.ResponseWriter, r *http.Request) {
 // CreateCustom lets the caller specify the short code directly.
 // Returns 409 Conflict if the code is taken.
 func (h *WriterHandler) CreateCustom(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	var req shortenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if !h.authorize(w, r, req.TurnstileToken) {
+	proof, verify, ok := h.authorize(w, r, req.TurnstileToken)
+	if !ok {
 		return
 	}
 	if req.URL == "" || req.Code == "" {
@@ -177,6 +206,10 @@ func (h *WriterHandler) CreateCustom(w http.ResponseWriter, r *http.Request) {
 		slog.WarnContext(r.Context(), "cache pre-warm failed", "error", err)
 	}
 
+	slog.InfoContext(r.Context(), "link created",
+		"code", req.Code, "via", proof,
+		"verify_ms", verify.Milliseconds(),
+		"total_ms", time.Since(started).Milliseconds())
 	writeJSON(w, http.StatusOK, shortenResponse{
 		ShortURL: fmt.Sprintf("%s/%s", h.baseURL, req.Code),
 	})
